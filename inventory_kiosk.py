@@ -99,19 +99,24 @@ if "counts" not in st.session_state:
 counts = st.session_state["counts"]
 
 # ---------- Layout ----------
+df = df.reset_index(drop=True)
+
 for i, row in df.iterrows():
     rid = row.id
     display_name = row.short_code or row.name or "Unnamed Ingredient"
+    # keep id internally, but don't show it
     counts.setdefault(rid, float(row.on_hand))
 
     with st.container():
         c1, c2, c3 = st.columns([3, 1.5, 1])
+
         with c1:
-            st.markdown(f"<div class='item-title'>{name}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='item-title'>{display_name}</div>", unsafe_allow_html=True)
             st.markdown(
                 f"<div class='item-sub'>Vendor: {row.vendor or '-'} • Current: {row.on_hand:.2f}</div>",
                 unsafe_allow_html=True
             )
+
         with c2:
             val = st.number_input(
                 "On Hand",
@@ -121,6 +126,7 @@ for i, row in df.iterrows():
                 label_visibility="collapsed"
             )
             counts[rid] = val
+
         with c3:
             st.markdown("&nbsp;", unsafe_allow_html=True)
             if st.button("💾 Save", key=f"save_{rid}"):
@@ -130,8 +136,9 @@ for i, row in df.iterrows():
                             insert into inventory_txns (ingredient_id, type, qty, source)
                             values (%s, 'in', %s, 'manual adjustment');
                         """, (rid, counts[rid]))
-                    st.success(f"{name} updated!")
+                    st.success(f"{display_name} updated!")
                 except Exception as e:
                     st.error("Save failed.")
                     st.exception(e)
-        st.markdown("---")
+
+    st.markdown("---")
