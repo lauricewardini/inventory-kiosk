@@ -1,3 +1,5 @@
+# inventory_kiosk.py
+
 import os
 from typing import Optional, List, Tuple
 from datetime import datetime
@@ -25,16 +27,39 @@ st.markdown("""
 # DB Helpers
 # -------------------------
 def get_conn():
+    """
+    Connect using, in order of preference:
+    1) st.secrets["DATABASE_URL"] or env DATABASE_URL (full DSN)
+    2) st.secrets["pg"] dict or PG* envs (host/port/db/user/pwd + optional sslmode)
+    Works with Supabase/Neon/etc. Set sslmode=require when needed.
+    """
+    dsn = (st.secrets.get("DATABASE_URL") or os.environ.get("DATABASE_URL"))
+    if dsn:
+        return psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor)
+
     cfg = st.secrets.get("pg", {})
     host = cfg.get("host") or os.environ.get("PGHOST", "localhost")
-    port = cfg.get("port") or os.environ.get("PGPORT", "5432")
+    port = int(cfg.get("port") or os.environ.get("PGPORT", "5432"))
     db   = cfg.get("dbname") or os.environ.get("PGDATABASE", "postgres")
     user = cfg.get("user") or os.environ.get("PGUSER", "postgres")
     pwd  = cfg.get("password") or os.environ.get("PGPASSWORD", "")
-    return psycopg2.connect(
-        host=host, port=port, dbname=db, user=user, password=pwd,
-        cursor_factory=psycopg2.extras.RealDictCursor,
-    )
+    sslmode = cfg.get("sslmode") or os.environ.get("PGSSLMODE", "")
+
+    kwargs = dict(host=host, port=port, dbname=db, user=user, password=pwd,
+                  cursor_factory=psycopg2.extras.RealDictCursor)
+    if sslmode:
+        kwargs["sslmode"] = sslmode  # e.g., "require" on Supabase/Neon
+    return psycopg2.connect(**kwargs)
+
+def db_available() -> bool:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("select 1;")
+        return True
+    except Exception as e:
+        st.session_state["_db_err"] = str(e)
+        return False
 
 def run_query(sql: str, params: Optional[Tuple]=None) -> List[dict]:
     with get_conn() as conn:
@@ -84,7 +109,7 @@ def ingredient_rows_by_area(area: str, search: str = "") -> pd.DataFrame:
     return pd.DataFrame(run_query(sql, tuple(params)))
 
 def onhand_df() -> pd.DataFrame:
-    # Prefer view; fallback inline if not present:
+    # Prefer your view; fallback inline if not present
     try:
         rows = run_query("select ingredient_id, name, on_hand from v_onhand;")
     except Exception:
@@ -141,25 +166,35 @@ def save_weekly_usage(updates: pd.DataFrame):
                     (float(r["weekly_usage"] or 0.0), r["id"]))
 
 # -------------------------
+# Guard: DB must be reachable
+# -------------------------
+if not db_available():
+    st.sidebar.warning("Database not connected")
+    st.error(
+        "I can’t reach the database.\n\n"
+        "• If you’re on Streamlit Cloud, set **Secrets** to either:\n"
+        "  - `DATABASE_URL = postgresql://user:pass@host:6543/db?sslmode=require`\n"
+        "  - or `[pg]` keys (host/port/db/user/password, sslmode=require)\n"
+        "• If you’re local, start Postgres on 5432 and set `.streamlit/secrets.toml`."
+    )
+    st.code(st.session_state.get("_db_err",""), language="text")
+    st.stop()
+
+# -------------------------
 # Sidebar Navigation
 # -------------------------
 st.sidebar.header("Donut Land Inventory")
 
-# fixed, known areas first (in your order), then auto-add any others that appear in DB
+# Preferred areas first (your order), then auto-add any others found in DB
 preferred_areas = ["Kitchen", "Utility Room", "Baking Area", "BOH Rack 1", "Bagel Area", "BOH FridgeRack"]
 db_areas = distinct_area_list()
-ordered_areas = []
-for a in preferred_areas:
-    if a in db_areas:
-        ordered_areas.append(a)
-# add any areas not listed in preferred_areas
-ordered_areas += [a for a in db_areas if a not in ordered_areas]
+ordered_areas = [a for a in preferred_areas if a in db_areas] + [a for a in db_areas if a not in preferred_areas]
 
 nav_items = [f"📍 {a}" for a in ordered_areas] + ["🧾 Order Planning", "⚙️ Settings"]
 page = st.sidebar.radio("Go to", nav_items, index=0)
 
 # -------------------------
-# Helpers
+# Helpers / Pages
 # -------------------------
 def show_area_page(area_name: str):
     st.subheader(f"Physical Count – {area_name}")
@@ -178,20 +213,16 @@ def show_area_page(area_name: str):
         df = df[["id","name","vendor","unit","on_hand"]].copy()
         df["count_now"] = 0.0
 
-        st.dataframe(
-            df[["name","vendor","unit","on_hand","count_now"]],
-            use_container_width=True, hide_index=True
-        )
-        st.caption("Tip: Use ⌘/Ctrl+Enter to apply edits in the table inputs.")
-
-        # Use an editor so staff can key directly in a grid
-        edited = st.data_editor(
+        st.data_editor(
             df,
             key=f"editor_{area_name}",
             use_container_width=True,
             hide_index=True,
             column_config={
                 "id": st.column_config.Column(visible=False),
+                "name": st.column_config.TextColumn("Item", disabled=True),
+                "vendor": st.column_config.TextColumn("Vendor", disabled=True),
+                "unit": st.column_config.TextColumn("Unit", disabled=True),
                 "on_hand": st.column_config.NumberColumn("On Hand (system)", format="%.4f", disabled=True),
                 "count_now": st.column_config.NumberColumn("Physical Count", format="%.4f"),
             },
@@ -199,25 +230,25 @@ def show_area_page(area_name: str):
         )
 
         if st.button("Post Adjustments", type="primary", key=f"post_{area_name}"):
+            edited = st.session_state.get(f"editor_{area_name}")
             posted = 0
-            for _, r in edited.iterrows():
-                target = float(r.get("count_now") or 0.0)
-                current = float(r.get("on_hand") or 0.0)
-                delta = round(target - current, 4)
-                if abs(delta) < 1e-9:
-                    continue
-                ttype = "in" if delta > 0 else "out"
-                insert_txn(ingredient_id=r["id"], ttype=ttype, qty=abs(delta),
-                           unit_cost=None, source="adjustment", ref_id=None)
-                posted += 1
+            if isinstance(edited, pd.DataFrame):
+                for _, r in edited.iterrows():
+                    target = float(r.get("count_now") or 0.0)
+                    current = float(r.get("on_hand") or 0.0)
+                    delta = round(target - current, 4)
+                    if abs(delta) < 1e-9:
+                        continue
+                    ttype = "in" if delta > 0 else "out"
+                    insert_txn(ingredient_id=r["id"], ttype=ttype, qty=abs(delta),
+                               unit_cost=None, source="adjustment", ref_id=None)
+                    posted += 1
             st.success(f"Posted {posted} adjustment(s).")
-            st.experimental_rerun()
+            st.rerun()
 
     with right:
         st.subheader("Quick Add Usage/Waste")
-        # Simple one-off out txn for speed
-        # Pull choices in this area
-        choices = items.sort_values("name")
+        choices = items.sort_values("name") if 'items' in locals() else pd.DataFrame()
         if not choices.empty:
             sel = st.selectbox("Item", options=choices["name"].tolist(), key=f"quick_sel_{area_name}")
             row = choices.loc[choices["name"] == sel].iloc[0]
@@ -226,7 +257,7 @@ def show_area_page(area_name: str):
             if st.button("Save Quick Out", key=f"quick_btn_{area_name}", disabled=qty<=0):
                 insert_txn(row["id"], "out", qty, None, source)
                 st.success("Saved.")
-                st.experimental_rerun()
+                st.rerun()
 
 def show_order_planning():
     st.subheader("Order Planning (Par = daily × 11)")
@@ -239,13 +270,13 @@ def show_order_planning():
         st.info("No rows.")
         return
 
-    # add costs
     c = costs_df()
-    plan = plan.merge(c, left_on="ingredient_id", right_on="id", how="left")
+    plan = plan.merge(c, left_on("ingredient_id"), right_on("id"), how="left")
     plan["est_cost"] = (plan["to_order"] * plan["cost_per_unit"]).fillna(0.0)
 
     st.dataframe(
-        plan[["vendor","name","unit","area","weekly_usage","daily_usage","par_level","current_stock","to_order","cost_per_unit","est_cost"]]
+        plan[["vendor","name","unit","area","weekly_usage","daily_usage",
+              "par_level","current_stock","to_order","cost_per_unit","est_cost"]]
         .sort_values(["vendor","name"]),
         use_container_width=True, hide_index=True
     )
@@ -256,7 +287,7 @@ def show_order_planning():
 
 def show_settings():
     st.subheader("Settings")
-    tab1, = st.tabs(["Seasonal Weekly Usage"])
+    (tab1,) = st.tabs(["Seasonal Weekly Usage"])
     with tab1:
         st.caption("Adjust weekly usage to reflect seasonality. Par is auto-recalculated (daily × 11).")
         data = weekly_usage_table()
@@ -264,7 +295,7 @@ def show_settings():
             st.info("No ingredients found.")
             return
         edited = st.data_editor(
-            data.rename(columns={"weekly_usage":"weekly_usage"}),
+            data,
             use_container_width=True,
             hide_index=True,
             column_config={
