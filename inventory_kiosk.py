@@ -1,47 +1,51 @@
+# inventory_kiosk.py
+import pandas as pd
 import streamlit as st
+
+# If your helpers live under /lib
 from lib.lib_db import get_conn
 from lib.lib_kiosk import render_kiosk
 
-# --- PAGE CONFIG ---
 st.set_page_config(page_title="Donut Land Inventory Dashboard", layout="wide")
-
-# --- HEADER ---
 st.title("🍩 Donut Land Inventory Dashboard")
 
-st.markdown("""
-Welcome to the Inventory Kiosk!  
-Use the sidebar to navigate between different areas (Kitchen, Bagel Area, BOH, etc.)  
-Each page shows items in that area, lets you adjust counts, and log waste or usage.
-""")
-
-# --- CONNECT TO DATABASE ---
+# ---- Connect
 try:
     conn = get_conn()
-    st.success("✅ Connected to Supabase database.")
 except Exception as e:
-    st.error("❌ Could not connect to Supabase database. Check your DATABASE_URL secret.")
+    st.error("❌ Could not connect to Supabase. Check the DATABASE_URL in Streamlit > Settings > Secrets.")
     st.exception(e)
     st.stop()
 
-# --- MAIN DASHBOARD CONTENT ---
-st.markdown("### Choose an area to manage inventory")
+# ---- Always show something first: All Items (no filters)
+st.subheader("All Items (live from Supabase)")
+all_items = pd.read_sql("""
+  with onhand as (
+    select ingredient_id, sum(case when type='in' then qty else -qty end) as on_hand
+    from inventory_txns group by ingredient_id
+  )
+  select i.id, i.name, i.unit, i.vendor, i.area,
+         coalesce(o.on_hand,0) as on_hand,
+         i.weekly_usage
+  from ingredients i
+  left join onhand o on o.ingredient_id = i.id
+  order by i.name;
+""", conn)
 
-# Example of quick-access buttons (you can edit or add more)
-col1, col2, col3 = st.columns(3)
-
-if col1.button("🥣 Kitchen"):
-    render_kiosk(conn, area="Kitchen", title="Kitchen Inventory")
-
-if col2.button("🥯 Bagel Area"):
-    render_kiosk(conn, area="Bagel Area", title="Bagel Area Inventory")
-
-if col3.button("🧈 BOH Fridge Rack"):
-    render_kiosk(conn, area="BOH Fridge Rack", title="BOH Fridge Rack Inventory")
+if all_items.empty:
+    st.info("No ingredients found yet. Add rows in Supabase → Table Editor → **ingredients**. "
+            "Fill in **name, unit, area, weekly_usage** and add at least one row in **inventory_txns**.")
+else:
+    st.dataframe(all_items, use_container_width=True, hide_index=True)
 
 st.divider()
-st.markdown("""
-If you don’t see items yet:
-1. Make sure your **ingredients** table in Supabase has rows.
-2. Each ingredient must have an **area** value that matches exactly (e.g., “Kitchen”).
-3. Add a few rows to **inventory_txns** (type = `in`, qty = starting stock).
-""")
+
+# ---- Area picker (auto-populated from your data)
+areas = sorted([a for a in all_items["area"].dropna().unique().tolist()]) if not all_items.empty else []
+st.subheader("Count by Area")
+if areas:
+    selected = st.selectbox("Choose an area", areas, index=0)
+    # Render the kiosk for the chosen area (tap-to-count UI)
+    render_kiosk(conn, area=selected, title=f"{selected} Inventory")
+else:
+    st.info("No areas found yet. Make sure your `ingredients.area` values are set (e.g., Kitchen, Utility Room, Baking Area, BOH Rack 1, Bagel Area, BOH Fridge Rack).")
