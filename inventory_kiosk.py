@@ -56,21 +56,21 @@ except Exception as e:
 
 # ---------- Load data ----------
 @st.cache_data(ttl=30)
-def load_data():
+def load_data(connection):
     query = """
       with onhand as (
         select ingredient_id, sum(case when type='in' then qty else -qty end) as on_hand
         from inventory_txns group by ingredient_id
       )
-      select i.id, i.short_code, i.name, i.vendor, i.area,
-       coalesce(o.on_hand,0) as on_hand
+      select i.id, i.name, i.unit, i.vendor, i.area,
+             coalesce(o.on_hand,0) as on_hand
       from ingredients i
       left join onhand o on o.ingredient_id = i.id
       order by i.area, i.name;
     """
-    return pd.read_sql(query, conn)
+    return pd.read_sql(query, connection)
 
-data = load_data()
+data = load_data(conn)
 areas = sorted(data["area"].dropna().unique())
 
 if not len(areas):
@@ -99,17 +99,19 @@ if "counts" not in st.session_state:
 counts = st.session_state["counts"]
 
 # ---------- Layout ----------
+df = df.reset_index(drop=True)
+
 for i, row in df.iterrows():
     rid = row.id
-    display_name = row.short_code or row.name or "Unnamed Ingredient"
+    name = row.name or "Unnamed Ingredient"
     counts.setdefault(rid, float(row.on_hand))
 
     with st.container():
-        c1, c2, c3 = st.columns([3, 1.5, 1])
+        c1, c2, c3 = st.columns([2, 1, 1])
         with c1:
             st.markdown(f"<div class='item-title'>{name}</div>", unsafe_allow_html=True)
             st.markdown(
-                f"<div class='item-sub'>Vendor: {row.vendor or '-'} • Current: {row.on_hand:.2f}</div>",
+                f"<div class='item-sub'>Unit: {row.unit or '-'} • Vendor: {row.vendor or '-'} • Current: {row.on_hand:.2f}</div>",
                 unsafe_allow_html=True
             )
         with c2:
