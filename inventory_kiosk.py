@@ -99,9 +99,8 @@ if "counts" not in st.session_state:
 counts = st.session_state["counts"]
 
 # ---------- Layout ----------
-for i, row in df.iterrows():
-    rid = row.id
-    name = row.name or "Unnamed Ingredient"
+display_name = row.short_code or row.name or "Unnamed Ingredient"
+st.markdown(f"<div class='item-title'>{display_name}</div>", unsafe_allow_html=True)
     counts.setdefault(rid, float(row.on_hand))
 
     with st.container():
