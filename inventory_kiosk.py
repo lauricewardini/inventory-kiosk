@@ -62,8 +62,8 @@ def load_data():
         select ingredient_id, sum(case when type='in' then qty else -qty end) as on_hand
         from inventory_txns group by ingredient_id
       )
-      select i.id, i.name, i.vendor, i.area,
-             coalesce(o.on_hand,0) as on_hand
+      select i.id, i.short_code, i.name, i.vendor, i.area,
+       coalesce(o.on_hand,0) as on_hand
       from ingredients i
       left join onhand o on o.ingredient_id = i.id
       order by i.area, i.name;
