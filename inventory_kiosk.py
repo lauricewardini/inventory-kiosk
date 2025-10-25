@@ -46,7 +46,8 @@ except Exception as e:
 
 # -------------------- Data access --------------------
 @st.cache_data(ttl=30)
-def load_items(connection):
+def load_items():
+    """Load ingredient data from Supabase (with fresh connection)."""
     sql = """
         with onhand as (
             select ingredient_id,
@@ -65,10 +66,15 @@ def load_items(connection):
           on o.ingredient_id = i.id
         order by i.area, i.name;
     """
-    return pd.read_sql(sql, connection)
+    conn_local = get_conn()
+    try:
+        df = pd.read_sql(sql, conn_local)
+        return df
+    finally:
+        conn_local.close()
 
 def save_absolute_count(connection, ingredient_id: str, new_on_hand: float):
-    # Insert the minimal delta needed to reach the absolute "new_on_hand" amount
+    """Insert only the delta needed to adjust on-hand stock."""
     sql = """
         with current as (
             select coalesce(sum(case when type='in' then qty else -qty end),0) as on_hand
@@ -87,7 +93,7 @@ def save_absolute_count(connection, ingredient_id: str, new_on_hand: float):
         cur.execute(sql, (ingredient_id, ingredient_id, new_on_hand, new_on_hand, new_on_hand))
 
 # -------------------- Load + basic UI --------------------
-data = load_items(conn)
+data = load_items()
 areas = sorted(data["area"].dropna().unique())
 
 if not areas:
@@ -106,7 +112,10 @@ m3.metric("Time", datetime.now().strftime("%-I:%M %p"))
 
 search = st.text_input("🔍 Search", placeholder=f"Search {area}…").strip().lower()
 if search:
-    df = df[df["name"].str.lower().str.contains(search) | df["short_code"].fillna("").str.lower().str.contains(search)]
+    df = df[
+        df["name"].str.lower().str.contains(search)
+        | df["short_code"].fillna("").str.lower().str.contains(search)
+    ]
 
 # session state for absolute counts
 if "counts" not in st.session_state:
@@ -152,3 +161,4 @@ for _, row in df.iterrows():
                     st.exception(e)
 
     st.markdown("---")
+
