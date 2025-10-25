@@ -63,7 +63,7 @@ def load_data():
         from inventory_txns group by ingredient_id
       )
       select i.id, i.short_code, i.name, i.vendor, i.area,
-       coalesce(o.on_hand,0) as on_hand
+             coalesce(o.on_hand,0) as on_hand
       from ingredients i
       left join onhand o on o.ingredient_id = i.id
       order by i.area, i.name;
@@ -73,7 +73,7 @@ def load_data():
 data = load_data()
 areas = sorted(data["area"].dropna().unique())
 
-if not len(areas):
+if not areas:
     st.warning("No areas found. Add 'area' values to ingredients in Supabase.")
     st.stop()
 
@@ -95,16 +95,14 @@ if search:
 # ---------- Initialize session counts ----------
 if "counts" not in st.session_state:
     st.session_state["counts"] = {}
-
 counts = st.session_state["counts"]
 
 # ---------- Layout ----------
 df = df.reset_index(drop=True)
 
-for i, row in df.iterrows():
+for _, row in df.iterrows():
     rid = row.id
     display_name = row.short_code or row.name or "Unnamed Ingredient"
-    # keep id internally, but don't show it
     counts.setdefault(rid, float(row.on_hand))
 
     with st.container():
@@ -132,13 +130,26 @@ for i, row in df.iterrows():
             if st.button("💾 Save", key=f"save_{rid}"):
                 try:
                     with conn, conn.cursor() as cur:
-                        cur.execute("""
+                        cur.execute(
+                            """
+                            with current as (
+                              select coalesce(sum(case when type='in' then qty else -qty end),0) as on_hand
+                              from inventory_txns where ingredient_id = %s
+                            )
                             insert into inventory_txns (ingredient_id, type, qty, source)
-                            values (%s, 'in', %s, 'manual adjustment');
-                        """, (rid, counts[rid]))
+                            select %s,
+                                   case when %s >= on_hand then 'in' else 'out' end,
+                                   abs(%s - on_hand),
+                                   'manual adjustment'
+                            from current
+                            where %s <> on_hand;
+                            """,
+                            (rid, rid, counts[rid], counts[rid], counts[rid]),
+                        )
                     st.success(f"{display_name} updated!")
                 except Exception as e:
                     st.error("Save failed.")
                     st.exception(e)
 
     st.markdown("---")
+
