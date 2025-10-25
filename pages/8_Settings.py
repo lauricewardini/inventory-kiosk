@@ -24,7 +24,6 @@ edited = st.data_editor(
         "vendor": st.column_config.TextColumn(help="e.g., Bakemark, Dawn"),
         "area": st.column_config.TextColumn(help="e.g., Kitchen, Utility Room"),
         "weekly_usage": st.column_config.NumberColumn(format="%.2f", help="Weekly usage → app uses weekly/7 × 11 for par"),
-        "par_override": st.column_config.NumberColumn(format="%.2f", help="Optional fixed par (0 = use formula)")
     },
     hide_index=True,
     use_container_width=True
