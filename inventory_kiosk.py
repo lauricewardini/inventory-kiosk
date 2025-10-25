@@ -9,10 +9,6 @@ st.set_page_config(page_title="Donut Land Inventory Dashboard", layout="wide")
 st.markdown(
     """
     <style>
-    .stNumberInput input {
-        text-align: center !important;
-        font-weight: 600 !important;
-    }
     div[data-testid="column"] {
         background-color: #fffafc;
         border: 1px solid #f1e1eb;
@@ -32,12 +28,16 @@ st.markdown(
         color: #6c757d;
         margin-bottom: 10px;
     }
+    .stNumberInput input {
+        text-align: center !important;
+        font-weight: 600 !important;
+    }
     </style>
     """,
     unsafe_allow_html=True
 )
 
-# ---------- DB connection ----------
+# ---------- Database connection ----------
 def get_conn():
     db_url = st.secrets.get("DATABASE_URL") or os.environ.get("DATABASE_URL")
     if not db_url:
@@ -54,7 +54,7 @@ except Exception as e:
     st.exception(e)
     st.stop()
 
-# ---------- Load Data ----------
+# ---------- Load data ----------
 @st.cache_data(ttl=30)
 def load_data():
     query = """
@@ -62,7 +62,7 @@ def load_data():
         select ingredient_id, sum(case when type='in' then qty else -qty end) as on_hand
         from inventory_txns group by ingredient_id
       )
-      select i.id, i.name, i.unit, i.vendor, i.area,
+      select i.id, i.name, i.vendor, i.area,
              coalesce(o.on_hand,0) as on_hand
       from ingredients i
       left join onhand o on o.ingredient_id = i.id
@@ -105,11 +105,13 @@ for i, row in df.iterrows():
     counts.setdefault(rid, float(row.on_hand))
 
     with st.container():
-        c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 1, 1])
+        c1, c2, c3 = st.columns([3, 1.5, 1])
         with c1:
             st.markdown(f"<div class='item-title'>{name}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div class='item-sub'>Unit: {row.unit or '-'} • Vendor: {row.vendor or '-'}</div>", unsafe_allow_html=True)
-            st.caption(f"Current: {row.on_hand:.2f}")
+            st.markdown(
+                f"<div class='item-sub'>Vendor: {row.vendor or '-'} • Current: {row.on_hand:.2f}</div>",
+                unsafe_allow_html=True
+            )
         with c2:
             val = st.number_input(
                 "On Hand",
@@ -120,12 +122,6 @@ for i, row in df.iterrows():
             )
             counts[rid] = val
         with c3:
-            st.markdown("&nbsp;", unsafe_allow_html=True)
-            if st.button("➕ +1", key=f"plus_{rid}"):
-                counts[rid] += 1
-            if st.button("➖ -1", key=f"minus_{rid}"):
-                counts[rid] = max(0, counts[rid] - 1)
-        with c4:
             st.markdown("&nbsp;", unsafe_allow_html=True)
             if st.button("💾 Save", key=f"save_{rid}"):
                 try:
