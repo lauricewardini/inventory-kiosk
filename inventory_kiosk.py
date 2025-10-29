@@ -2,7 +2,6 @@
 
 import os
 from typing import Optional, List, Tuple
-from datetime import datetime
 
 import streamlit as st
 import pandas as pd
@@ -31,7 +30,6 @@ def get_conn():
     Connect using, in order of preference:
     1) st.secrets["DATABASE_URL"] or env DATABASE_URL (full DSN)
     2) st.secrets["pg"] dict or PG* envs (host/port/db/user/pwd + optional sslmode)
-    Works with Supabase/Neon/etc. Set sslmode=require when needed.
     """
     dsn = (st.secrets.get("DATABASE_URL") or os.environ.get("DATABASE_URL"))
     if dsn:
@@ -86,12 +84,18 @@ def insert_txn(ingredient_id:str, ttype:str, qty:float, unit_cost:Optional[float
 # -------------------------
 @st.cache_data
 def distinct_vendor_list() -> List[str]:
-    rows = run_query("select distinct vendor from ingredients where vendor is not null and vendor<>'' order by vendor;")
+    rows = run_query("""
+        select distinct vendor from ingredients
+        where vendor is not null and vendor <> '' order by vendor;
+    """)
     return [r["vendor"] for r in rows]
 
 @st.cache_data
 def distinct_area_list() -> List[str]:
-    rows = run_query("select distinct area from ingredients where area is not null and area<>'' order by area;")
+    rows = run_query("""
+        select distinct area from ingredients
+        where area is not null and area <> '' order by area;
+    """)
     return [r["area"] for r in rows]
 
 def ingredient_rows_by_area(area: str, search: str = "") -> pd.DataFrame:
@@ -109,7 +113,7 @@ def ingredient_rows_by_area(area: str, search: str = "") -> pd.DataFrame:
     return pd.DataFrame(run_query(sql, tuple(params)))
 
 def onhand_df() -> pd.DataFrame:
-    # Prefer your view; fallback inline if not present
+    # Prefer view; fallback inline if not present:
     try:
         rows = run_query("select ingredient_id, name, on_hand from v_onhand;")
     except Exception:
@@ -137,8 +141,10 @@ def order_planning_df(vendor: Optional[str] = None) -> pd.DataFrame:
           greatest(0, coalesce(i.par, (i.weekly_usage/7.0)*11.0) - coalesce(oh.on_hand,0)) as to_order
         from ingredients i
         left join (
-            select ingredient_id, coalesce(sum(case when type='in' then qty else -qty end),0) as on_hand
-            from inventory_txns group by ingredient_id
+            select ingredient_id,
+                   coalesce(sum(case when type='in' then qty else -qty end),0) as on_hand
+            from inventory_txns
+            group by ingredient_id
         ) oh on oh.ingredient_id = i.id
         where 1=1
     """
@@ -162,8 +168,10 @@ def weekly_usage_table() -> pd.DataFrame:
 
 def save_weekly_usage(updates: pd.DataFrame):
     for _, r in updates.iterrows():
-        run_execute("update ingredients set weekly_usage=%s where id=%s",
-                    (float(r["weekly_usage"] or 0.0), r["id"]))
+        run_execute(
+            "update ingredients set weekly_usage=%s where id=%s",
+            (float(r["weekly_usage"] or 0.0), r["id"])
+        )
 
 # -------------------------
 # Guard: DB must be reachable
@@ -172,10 +180,12 @@ if not db_available():
     st.sidebar.warning("Database not connected")
     st.error(
         "I can’t reach the database.\n\n"
-        "• If you’re on Streamlit Cloud, set **Secrets** to either:\n"
-        "  - `DATABASE_URL = postgresql://user:pass@host:6543/db?sslmode=require`\n"
+        "• On Streamlit Cloud, set **Secrets** to either:\n"
+        "  - `DATABASE_URL = postgresql://user:pass@host:port/db?sslmode=require`\n"
         "  - or `[pg]` keys (host/port/db/user/password, sslmode=require)\n"
-        "• If you’re local, start Postgres on 5432 and set `.streamlit/secrets.toml`."
+        "• For Supabase (direct): host=`db.<ref>.supabase.co`, port=`5432`, sslmode=`require`.\n"
+        "• For Supabase (pooler): host=`aws-1-us-east-1.pooler.supabase.com`, port=`6543`, "
+        "  username format `<dbuser>.<project_ref>`, sslmode=`require`."
     )
     st.code(st.session_state.get("_db_err",""), language="text")
     st.stop()
@@ -194,7 +204,7 @@ nav_items = [f"📍 {a}" for a in ordered_areas] + ["🧾 Order Planning", "⚙�
 page = st.sidebar.radio("Go to", nav_items, index=0)
 
 # -------------------------
-# Helpers / Pages
+# Pages
 # -------------------------
 def show_area_page(area_name: str):
     st.subheader(f"Physical Count – {area_name}")
@@ -213,13 +223,14 @@ def show_area_page(area_name: str):
         df = df[["id","name","vendor","unit","on_hand"]].copy()
         df["count_now"] = 0.0
 
+        # Editable grid (keep ID disabled instead of hidden; Streamlit version compatibility)
         st.data_editor(
             df,
             key=f"editor_{area_name}",
             use_container_width=True,
             hide_index=True,
             column_config={
-                "id": st.column_config.Column(visible=False),
+                "id": st.column_config.TextColumn("ID", disabled=True),
                 "name": st.column_config.TextColumn("Item", disabled=True),
                 "vendor": st.column_config.TextColumn("Vendor", disabled=True),
                 "unit": st.column_config.TextColumn("Unit", disabled=True),
@@ -240,8 +251,14 @@ def show_area_page(area_name: str):
                     if abs(delta) < 1e-9:
                         continue
                     ttype = "in" if delta > 0 else "out"
-                    insert_txn(ingredient_id=r["id"], ttype=ttype, qty=abs(delta),
-                               unit_cost=None, source="adjustment", ref_id=None)
+                    insert_txn(
+                        ingredient_id=r["id"],
+                        ttype=ttype,
+                        qty=abs(delta),
+                        unit_cost=None,
+                        source="adjustment",
+                        ref_id=None
+                    )
                     posted += 1
             st.success(f"Posted {posted} adjustment(s).")
             st.rerun()
@@ -271,7 +288,8 @@ def show_order_planning():
         return
 
     c = costs_df()
-    plan = plan.merge(c, left_on("ingredient_id"), right_on("id"), how="left")
+    # ✅ fixed merge syntax
+    plan = plan.merge(c, left_on="ingredient_id", right_on="id", how="left")
     plan["est_cost"] = (plan["to_order"] * plan["cost_per_unit"]).fillna(0.0)
 
     st.dataframe(
@@ -299,7 +317,7 @@ def show_settings():
             use_container_width=True,
             hide_index=True,
             column_config={
-                "id": st.column_config.Column(visible=False),
+                "id": st.column_config.TextColumn("ID", disabled=True),
                 "name": st.column_config.TextColumn("Ingredient", disabled=True),
                 "vendor": st.column_config.TextColumn("Vendor", disabled=True),
                 "area": st.column_config.TextColumn("Area", disabled=True),
